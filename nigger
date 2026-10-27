@@ -1,0 +1,381 @@
+--[[
+    SORU FAST ATTACK — Melee + Fruit M1 (Same Time)
+    Range: 120 studs (fixed)
+--]]
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ═══════════════════════════════════════════════════════════
+-- REMOTES
+-- ═══════════════════════════════════════════════════════════
+local Net, RegisterHit, RegisterAttack
+do
+    local ok, res = pcall(function()
+        return ReplicatedStorage:WaitForChild("Modules", 5):WaitForChild("Net", 5)
+    end)
+    if ok and res then
+        Net = res
+        RegisterHit    = Net:FindFirstChild("RE/RegisterHit")
+        RegisterAttack = Net:FindFirstChild("RE/RegisterAttack")
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════
+-- CONFIG
+-- ═══════════════════════════════════════════════════════════
+local CONFIG = {
+    Enabled       = false,
+    Interval      = 0.05,
+    Range         = 120,   -- FIXED
+    MeleeEnabled  = true,
+    FruitEnabled  = true,
+}
+
+local Thread, Sent, Status = nil, 0, "Ready"
+
+-- ═══════════════════════════════════════════════════════════
+-- HELPERS
+-- ═══════════════════════════════════════════════════════════
+local function getFruit()
+    local char = LocalPlayer.Character
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if t:IsA("Tool") and t.ToolTip == "Blox Fruit" then return t end
+        end
+    end
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        for _, t in ipairs(bp:GetChildren()) do
+            if t:IsA("Tool") and t.ToolTip == "Blox Fruit" then return t end
+        end
+    end
+    return nil
+end
+
+local function getAllTargets(myPos)
+    local list = {}
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                list[#list+1] = { model = p.Character, hrp = hrp, head = p.Character:FindFirstChild("Head") or hrp }
+            end
+        end
+    end
+
+    local enemies = workspace:FindFirstChild("Enemies")
+    local scanned = {}
+    if enemies then
+        for _, npc in ipairs(enemies:GetDescendants()) do
+            if npc:IsA("Humanoid") and npc.Health > 0 then
+                local model = npc.Parent
+                if model and not scanned[model] and not Players:GetPlayerFromCharacter(model) then
+                    scanned[model] = true
+                    local hrp = model:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        list[#list+1] = { model = model, hrp = hrp, head = model:FindFirstChild("Head") or hrp }
+                    end
+                end
+            end
+        end
+    end
+
+    if #list == 0 then
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj:IsA("Model") and not Players:GetPlayerFromCharacter(obj) then
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                local hrp = obj:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    list[#list+1] = { model = obj, hrp = hrp, head = obj:FindFirstChild("Head") or hrp }
+                end
+            end
+        end
+    end
+
+    local filtered = {}
+    for _, t in ipairs(list) do
+        if (t.hrp.Position - myPos).Magnitude <= CONFIG.Range then
+            filtered[#filtered+1] = t
+        end
+    end
+    return filtered
+end
+
+local function getNearestTarget(myPos)
+    local targets = getAllTargets(myPos)
+    local best, bestDist = nil, math.huge
+    for _, t in ipairs(targets) do
+        local d = (t.hrp.Position - myPos).Magnitude
+        if d < bestDist then bestDist, best = d, t end
+    end
+    return best
+end
+
+-- ═══════════════════════════════════════════════════════════
+-- ATTACK
+-- ═══════════════════════════════════════════════════════════
+local function fireMelee(target)
+    if not RegisterHit or not RegisterAttack then return false end
+    pcall(function()
+        RegisterAttack:FireServer(0)
+        RegisterHit:FireServer(target.head, {{target.model, target.head}})
+    end)
+    return true
+end
+
+local function fireFruit(target, myPos, fruit)
+    local remote = fruit:FindFirstChild("LeftClickRemote")
+    if not remote then return false end
+
+    local dir = (target.hrp.Position - myPos)
+    if dir.Magnitude > 0 then dir = dir.Unit else dir = Vector3.new(0, 0, -1) end
+
+    if fruit.Name:find("Kitsune") then
+        pcall(function()
+            if fruit:FindFirstChild("M1Active") then fruit.M1Active.Value = true end
+            if fruit:FindFirstChild("RemoteEvent") then fruit.RemoteEvent:FireServer("M1", 1, true) end
+        end)
+    end
+
+    pcall(function() remote:FireServer(dir, 1, true) end)
+    return true
+end
+
+local function startAttack()
+    if Thread then task.cancel(Thread) end
+    Thread = task.spawn(function()
+        while CONFIG.Enabled do
+            task.wait(CONFIG.Interval)
+
+            local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if not myHrp then Status = "❌ No character"; continue end
+
+            local target = getNearestTarget(myHrp.Position)
+            if not target then Status = "🎯 No targets (120 stud)"; continue end
+
+            local fruit = CONFIG.FruitEnabled and getFruit() or nil
+            local hitMelee, hitFruit = false, false
+
+            if CONFIG.MeleeEnabled then
+                hitMelee = fireMelee(target)
+            end
+
+            if CONFIG.FruitEnabled and fruit then
+                hitFruit = fireFruit(target, myHrp.Position, fruit)
+            end
+
+            Sent = Sent + 1
+
+            local parts = {}
+            if hitMelee then parts[#parts+1] = "⚔️ Melee" end
+            if hitFruit then parts[#parts+1] = "🍎 " .. fruit.Name end
+            if #parts > 0 then
+                Status = "✅ " .. table.concat(parts, " + ")
+            else
+                Status = "❌ Nothing fired"
+            end
+        end
+    end)
+end
+
+local function stopAttack()
+    CONFIG.Enabled = false
+    if Thread then task.cancel(Thread); Thread = nil end
+    Status = "⏹️ Stopped"
+end
+
+local function toggle()
+    if CONFIG.Enabled then stopAttack() else CONFIG.Enabled = true; startAttack() end
+end
+
+-- ═══════════════════════════════════════════════════════════
+-- GUI
+-- ═══════════════════════════════════════════════════════════
+local ACCENT = Color3.fromRGB(255, 80, 80)
+local BG     = Color3.fromRGB(14, 10, 14)
+local CARD   = Color3.fromRGB(22, 16, 22)
+
+local function mkCorner(p, r) Instance.new("UICorner", p).CornerRadius = UDim.new(0, r or 8) end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "SORU_Combo"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function() gui.Parent = game:GetService("CoreGui") end)
+if not gui.Parent then gui.Parent = PlayerGui end
+
+local Panel = Instance.new("Frame", gui)
+Panel.Size = UDim2.new(0, 240, 0, 210)
+Panel.Position = UDim2.new(0, 20, 0, 40)
+Panel.BackgroundColor3 = BG
+Panel.BackgroundTransparency = 0.08
+Panel.BorderSizePixel = 0
+Panel.Active = true
+mkCorner(Panel, 12)
+
+local stroke = Instance.new("UIStroke", Panel)
+stroke.Color = ACCENT
+stroke.Thickness = 1.5
+stroke.Transparency = 0.3
+
+local title = Instance.new("TextLabel", Panel)
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundColor3 = Color3.fromRGB(20, 12, 20)
+title.BorderSizePixel = 0
+title.Text = "⚔️ MELEE + FRUIT  (120 stud)"
+title.TextColor3 = ACCENT
+title.Font = Enum.Font.GothamBold
+title.TextSize = 11
+mkCorner(title, 12)
+
+local statusLbl = Instance.new("TextLabel", Panel)
+statusLbl.Size = UDim2.new(1, -16, 0, 18)
+statusLbl.Position = UDim2.new(0, 8, 0, 36)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "Status: Ready"
+statusLbl.TextColor3 = Color3.fromRGB(200, 180, 200)
+statusLbl.Font = Enum.Font.Gotham
+statusLbl.TextSize = 10
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local sentLbl = Instance.new("TextLabel", Panel)
+sentLbl.Size = UDim2.new(1, -16, 0, 16)
+sentLbl.Position = UDim2.new(0, 8, 0, 54)
+sentLbl.BackgroundTransparency = 1
+sentLbl.Text = "Sent: 0"
+sentLbl.TextColor3 = Color3.fromRGB(255, 100, 100)
+sentLbl.Font = Enum.Font.GothamBold
+sentLbl.TextSize = 10
+sentLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local function mkToggle(label, y, getter, setter)
+    local btn = Instance.new("TextButton", Panel)
+    btn.Size = UDim2.new(1, -16, 0, 26)
+    btn.Position = UDim2.new(0, 8, 0, y)
+    btn.BackgroundColor3 = CARD
+    btn.BorderSizePixel = 0
+    btn.Text = label .. ": " .. (getter() and "ON" or "OFF")
+    btn.TextColor3 = getter() and Color3.fromRGB(0, 255, 150) or Color3.fromRGB(220, 200, 220)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    mkCorner(btn, 6)
+    btn.MouseButton1Click:Connect(function()
+        setter(not getter())
+        btn.Text = label .. ": " .. (getter() and "ON" or "OFF")
+        btn.TextColor3 = getter() and Color3.fromRGB(0, 255, 150) or Color3.fromRGB(220, 200, 220)
+    end)
+    return btn
+end
+
+mkToggle("⚔️ Melee", 76,
+    function() return CONFIG.MeleeEnabled end,
+    function(v) CONFIG.MeleeEnabled = v end)
+
+mkToggle("🍎 Fruit", 106,
+    function() return CONFIG.FruitEnabled end,
+    function(v) CONFIG.FruitEnabled = v end)
+
+-- Interval
+local intLbl = Instance.new("TextLabel", Panel)
+intLbl.Size = UDim2.new(0, 140, 0, 26)
+intLbl.Position = UDim2.new(0, 8, 0, 138)
+intLbl.BackgroundColor3 = CARD
+intLbl.BorderSizePixel = 0
+intLbl.Text = string.format("Int: %.2fs", CONFIG.Interval)
+intLbl.TextColor3 = Color3.fromRGB(220, 200, 220)
+intLbl.Font = Enum.Font.GothamBold
+intLbl.TextSize = 10
+mkCorner(intLbl, 6)
+
+local function mkIntBtn(text, x, delta)
+    local b = Instance.new("TextButton", Panel)
+    b.Size = UDim2.new(0, 38, 0, 26)
+    b.Position = UDim2.new(0, x, 0, 138)
+    b.BackgroundColor3 = CARD
+    b.BorderSizePixel = 0
+    b.Text = text
+    b.TextColor3 = ACCENT
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 13
+    mkCorner(b, 6)
+    b.MouseButton1Click:Connect(function()
+        CONFIG.Interval = math.clamp(CONFIG.Interval + delta, 0.01, 1)
+        intLbl.Text = string.format("Int: %.2fs", CONFIG.Interval)
+    end)
+end
+mkIntBtn("−", 152, -0.01)
+mkIntBtn("+", 194, 0.01)
+
+-- Start
+local toggleBtn = Instance.new("TextButton", Panel)
+toggleBtn.Size = UDim2.new(1, -16, 0, 36)
+toggleBtn.Position = UDim2.new(0, 8, 1, -44)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 80, 40)
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Text = "▶ START"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 13
+mkCorner(toggleBtn, 8)
+
+local tbs = Instance.new("UIStroke", toggleBtn)
+tbs.Color = Color3.fromRGB(100, 220, 120)
+tbs.Thickness = 1.3
+
+toggleBtn.MouseButton1Click:Connect(toggle)
+
+-- Drag
+local dragging, dragStart, startPos = false, nil, nil
+Panel.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Panel.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local d = input.Position - dragStart
+        Panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+task.spawn(function()
+    while gui.Parent do
+        task.wait(0.25)
+        pcall(function()
+            statusLbl.Text = "Status: " .. Status
+            sentLbl.Text = "Sent: " .. Sent
+            if CONFIG.Enabled then
+                statusLbl.TextColor3 = Color3.fromRGB(255, 160, 160)
+                toggleBtn.Text = "■ STOP"
+                toggleBtn.BackgroundColor3 = Color3.fromRGB(120, 30, 40)
+                tbs.Color = Color3.fromRGB(220, 100, 100)
+            else
+                statusLbl.TextColor3 = Color3.fromRGB(200, 180, 200)
+                toggleBtn.Text = "▶ START"
+                toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 80, 40)
+                tbs.Color = Color3.fromRGB(100, 220, 120)
+            end
+        end)
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.V then toggle() end
+end)
+
+print("[SORU] Melee + Fruit (120 stud) loaded — V to toggle")
